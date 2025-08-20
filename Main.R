@@ -1,7 +1,9 @@
-############################
-### Risk Prediction in R ###
-### Created by: Jeet Patel #
-############################
+# =============================================
+# Machine Learning for Risk Prediction
+# Author: Jeet Patel
+# Date: 2025-08-25
+# =============================================
+
 
 # 0) Clear workspace and load packages
 rm(list = ls())
