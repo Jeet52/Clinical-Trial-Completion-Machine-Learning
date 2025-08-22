@@ -1,0 +1,454 @@
+---
+title: "Machine Learning on OMOP Healthcare Data"
+author: "Jeet Patel"
+date: "2025-08-21"
+output: 
+  html_document:
+      toc: true
+      toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,     # show code
+  warning = FALSE, # hide warnings
+  message = FALSE) # hide messages
+```
+
+# Introduction
+In modern healthcare, predictive modeling plays a critical role in identifying patients at risk of adverse outcomes, allowing for timely interventions and improved clinical decision-making.  
+
+This project focuses on developing a **machine learning model for risk prediction** using real-world healthcare data.  
+
+The primary objectives of this study are to:  
+- Prepare and explore the dataset  
+- Build predictive models for a clinically meaningful target  
+- Evaluate model performance with both statistical rigor and clinical interpretability  
+
+By following a structured workflow—from data cleaning and feature engineering to model training, validation, and interpretation—we aim to produce insights that are both methodologically sound and relevant for healthcare decision-making.
+
+
+## Key Steps
+- **Data Loading:** Merged demographics and adverse events datasets into a single analysis-ready dataset.  
+- **Data Cleaning & Feature Selection:** Selected relevant predictors, handled missing values, capped outliers, and created a binary target variable (`completed_flag`).  
+- **Train/Test Split & Preprocessing:** Split the dataset into training and testing sets, encoded categorical variables, and normalized numeric predictors using a reproducible recipe.  
+- **Modeling:**  
+  - **Logistic Regression:** Built an interpretable baseline model using `glm`.  
+  - **Random Forest:** Trained an ensemble model with 500 trees, capturing nonlinearities and providing feature importance.  
+- **Predictions & Model Evaluation:**  
+  - Generated predictions on the test set for both models.  
+  - Evaluated performance using accuracy, confusion matrices, and ROC/AUC metrics.  
+  - Visualized feature importance for Random Forest to highlight the most influential predictors. 
+
+
+
+
+
+
+
+
+
+
+# Setup: Packages & Libraries
+In this section, we load the R packages required for the analysis:
+
+- `haven`: Reads SAS datasets (.sas7bdat) into R, enabling direct use of healthcare data. 
+- `tidyverse`: Provides tools for data cleaning, manipulation, and visualization. 
+- `tidymodels`:Framework for building, training, and evaluating machine learning models.
+- `vip`: Generates Variable Importance Plots to interpret models and highlight key predictors.
+
+
+```{r Packages}
+library(haven)       # for reading SAS files
+library(tidyverse)   # for data cleaning & plotting
+library(tidymodels)  # for machine learning
+library(vip)          # variable importance plots
+```
+
+By loading these packages at the beginning, we ensure that all necessary tools for data preparation, modeling, and evaluation are available throughout the analysis.
+
+
+
+
+
+
+
+# Data Loading & Merging
+In this step, we **load the healthcare datasets**, merge them into a single dataset, and perform an initial inspection to ensure successful integration. This creates the foundation for all subsequent **data cleaning, feature engineering, and modeling**.  
+
+## Objective
+- Import the raw healthcare datasets (`adsl` and `adae`) into R.  
+- Merge the datasets into a single unified dataset using the patient identifier `USUBJID`.  
+- Perform an initial inspection (`head`, `str`, `summary`) to verify successful integration.  
+- Ensure both **demographic** and **clinical event** information are available for downstream analysis.  
+
+
+## R Code
+```{r load_merge}
+# 1) Set working directory and load data
+ setwd("/Users/jeetpatel/Desktop/Final Project")
+
+adsl <- read_sas("adsl.sas7bdat")   # Demographics dataset
+load("adae.Rda")                    # Adverse events dataset
+
+# 2) Merge datasets by USUBJID
+data <- left_join(adsl, adae, by = "USUBJID")
+
+# 3) Inspect merged dataset
+head(data)
+str(data)
+summary(data)
+```
+
+## Functions Used
+- `setwd("/Users/jeetpatel/Desktop/Final Project")` – Sets the **working directory** where the data files are stored.  
+- `read_sas("adsl.sas7bdat")` – Reads the **demographics dataset** into `adsl`.  
+- `load("adae.Rda")` – Loads the **adverse events dataset** into `adae`.  
+- `left_join(adsl, adae, by = "USUBJID")` – Merges the two datasets on the **common ID variable** `USUBJID` into `data`.  
+
+## Variables Created
+- `adsl` → Demographics dataset  
+- `adae` → Adverse events dataset  
+- `data` → Merged dataset combining demographics and adverse events  
+
+## Summary
+At the end of this step, we successfully merged the `adsl` (demographics) and `adae` (adverse events) datasets into a single dataset, `data`. An initial inspection using `head()`, `str()`, and `summary()` confirmed that the integration was successful and that all relevant patient-level information is present. This merged dataset provides a solid foundation for subsequent steps in **data cleaning, feature engineering, and machine learning modeling**.
+
+
+
+
+
+
+# Data Preparation
+
+In this section, we **prepare the merged dataset** for machine learning by selecting relevant columns, handling missing values, capping outliers, and creating the target variable.
+
+## Objective
+Prepare the dataset for modeling by:  
+- Selecting only the relevant variables  
+- Handling missing values  
+- Capping numeric outliers  
+- Creating the binary target variable for prediction
+
+## R Code
+```{r data_preparation}
+# 1) Select relevant columns and rename
+data <- data[, c("USUBJID", "AGE.y", "SEX.y", "RACE.y", "DCDECOD")]
+names(data)[names(data) == "AGE.y"] <- "AGE"
+names(data)[names(data) == "SEX.y"] <- "SEX"
+names(data)[names(data) == "RACE.y"] <- "RACE"
+
+# 2) Handle missing values
+data$AGE[is.na(data$AGE)] <- median(data$AGE, na.rm = TRUE)
+data$SEX  <- fct_na_value_to_level(data$SEX, "Unknown")
+data$RACE <- fct_na_value_to_level(data$RACE, "Unknown")
+
+# 3) Cap AGE outliers at 1st and 99th percentile
+age_lower <- quantile(data$AGE, 0.01)
+age_upper <- quantile(data$AGE, 0.99)
+data$AGE[data$AGE < age_lower] <- age_lower
+data$AGE[data$AGE > age_upper] <- age_upper
+
+# 4) Remove rows with missing DCDECOD
+data <- data[!is.na(data$DCDECOD), ]
+
+# 5) Create binary target variable and remove original column
+data$completed_flag <- factor(ifelse(data$DCDECOD == "COMPLETED", "Yes", "No"))
+data <- data[, !(names(data) %in% "DCDECOD")]
+
+# 6) Check target variable balance
+table(data$completed_flag)
+```
+
+## Functions Used
+- `data[, c(...)]` – Selects columns of interest.  
+- `names(data)[...] <- ...` – Renames columns for clarity.  
+- `is.na()` / `median(..., na.rm=TRUE)` – Handles missing numeric values.  
+- `fct_na_value_to_level()` – Replaces missing factor values with a specific level ("Unknown").  
+- `quantile()` – Computes percentiles for capping numeric outliers.  
+- `factor(ifelse(...))` – Creates a binary categorical target variable.  
+- `table()` – Displays the frequency counts of the target variable.
+
+## Variables Created
+- `AGE`, `SEX`, `RACE` → Cleaned predictor variables  
+- `completed_flag` → Binary target variable ("Yes"/"No")  
+- `data` → Updated dataset ready for modeling
+
+## Summary
+After this step:  
+- The dataset contains only the **necessary predictors** (`AGE`, `SEX`, `RACE`) and the **target variable** (`completed_flag`).  
+- Missing values have been handled, numeric outliers capped, and the dataset is **ready for train/test splitting and modeling**.
+
+
+
+
+
+
+
+# Exploratory Data Analysis
+
+In this section, we **explore the cleaned dataset** to understand its structure, variable distributions, and class balance.
+
+## Objective
+- Inspect dataset structure and variable types  
+- Summarize numeric and categorical variables  
+- Visualize the distribution of the target variable (`completed_flag`)
+
+## R Code
+```{r exploratory_data}
+# 1) Overview of dataset structure and types
+glimpse(data)
+
+# 2) Summary statistics for numeric and categorical variables
+summary(data)
+
+# 3) Visualize target variable distribution
+completed_counts <- table(data$completed_flag)
+barplot(completed_counts,
+        horiz = TRUE,
+        col = c("steelblue", "orange"),
+        main = "Distribution of Completed Flag",
+        xlab = "Count")
+```
+
+## Functions Used
+- `glimpse()` – Compactly shows variable types and first values; ideal for wide datasets.  
+- `summary()` – Provides summary statistics for numeric variables and counts for factors.  
+- `table()` – Counts occurrences of each category (here, `completed_flag`).  
+- `barplot()` – Visualizes the distribution of a categorical variable.  
+
+## Variables Created
+- `completed_counts` → Frequency counts of `completed_flag` categories  
+
+## Summary
+After this step:  
+- The dataset structure, variable types, and summary statistics are reviewed.  
+- The target variable `completed_flag` shows class distribution, visualized via a barplot.  
+- This EDA ensures understanding of the dataset before modeling.
+
+
+
+
+
+
+
+# Machine Learning Model
+
+In this section, we **prepare the dataset for modeling** by splitting it into training and testing sets and defining preprocessing steps for machine learning.
+
+---
+
+## Train/Test Split
+
+### Objective
+- Divide the dataset into **training** and **testing** sets  
+- Maintain the target variable distribution using stratified sampling
+
+### R Code
+```{r train_test_split}
+set.seed(123)
+split <- initial_split(data, prop = 0.8, strata = completed_flag)
+train <- training(split)
+test  <- testing(split)
+```
+
+### Functions Used
+- `set.seed()` – Ensures reproducibility of random operations  
+- `initial_split()` – Splits data into training/testing sets  
+- `training()` / `testing()` – Extracts the training and testing datasets from the split object  
+
+### Variables Created
+- `split` → Object storing the train/test split  
+- `train` → Training dataset for fitting models  
+- `test` → Testing dataset for evaluating models  
+
+### Summary
+After this step:  
+- The dataset is divided into training and testing sets.  
+- The target variable’s class distribution is maintained in both sets, ensuring reliable model evaluation.
+
+
+
+
+
+
+
+
+
+## Preprocessing Recipe
+
+### Objective
+Define feature preprocessing for machine learning:  
+- Encode categorical variables  
+- Normalize numeric variables  
+
+### R Code
+```{r preprocessing_recipe}
+rec <- recipe(completed_flag ~ AGE + SEX + RACE, data = train)
+rec <- step_dummy(rec, all_nominal_predictors()) # One-hot encode categorical variables
+rec <- step_normalize(rec, all_numeric_predictors()) # Standardize numeric variables
+```
+
+### Functions Used
+- `recipe()` – Creates a preprocessing blueprint specifying outcome and predictors  
+- `step_dummy()` – Converts categorical variables into dummy/one-hot encoded features  
+- `step_normalize()` – Standardizes numeric predictors  
+
+### Variables Created
+- `rec` → Preprocessing recipe ready for model training  
+
+### Summary
+After this step:  
+- The preprocessing recipe defines all necessary transformations for modeling.  
+- Categorical predictors are encoded, and numeric predictors are normalized.  
+- The dataset is fully prepared for training machine learning models.
+
+
+
+
+
+
+
+
+## Logistic Regression & Random Forest
+
+### Objective
+Train and compare two classification models:  
+- **Logistic Regression (glm engine)** – interpretable baseline model  
+- **Random Forest (ranger engine, 500 trees)** – flexible ensemble model with feature importance  
+
+### R Code
+```{r models}
+# 1) Logistic Regression Model
+log_model <- logistic_reg(mode = "classification")
+log_model <- set_engine(log_model, "glm")
+
+log_wf <- workflow()
+log_wf <- add_recipe(log_wf, rec)
+log_wf <- add_model(log_wf, log_model)
+
+log_fit <- fit(log_wf, data = train)
+
+
+# 2) Random Forest Model
+rf_model <- rand_forest(mode = "classification", trees = 500)
+rf_model <- set_engine(rf_model, "ranger", importance = "impurity")
+
+rf_wf <- workflow()
+rf_wf <- add_recipe(rf_wf, rec)
+rf_wf <- add_model(rf_wf, rf_model)
+
+set.seed(123)
+rf_fit <- fit(rf_wf, data = train)
+```
+
+### Functions Used
+- `logistic_reg(mode = "classification")` – Defines logistic regression model for classification  
+- `rand_forest(mode = "classification", trees = 500)` – Defines random forest model with 500 trees  
+- `set_engine("glm")` – Uses **glm** as logistic regression engine  
+- `set_engine("ranger", importance = "impurity")` – Uses **ranger** as random forest engine and computes feature importance  
+- `workflow()` – Creates a workflow object for preprocessing + model  
+- `add_recipe()` – Adds preprocessing recipe  
+- `add_model()` – Adds chosen model specification  
+- `fit()` – Trains the workflow on the training dataset  
+
+### Variables Created
+- `log_model` → Logistic regression model specification  
+- `log_wf` → Workflow for logistic regression  
+- `log_fit` → Trained logistic regression model  
+- `rf_model` → Random forest model specification  
+- `rf_wf` → Workflow for random forest  
+- `rf_fit` → Trained random forest model  
+
+### Summary
+- Logistic Regression provides a **simple, interpretable baseline** for classification.  
+- Random Forest builds an **ensemble of 500 decision trees**, handling nonlinearities and providing feature importance.  
+- Both models are trained on the **same preprocessing recipe** for fair comparison.  
+
+
+
+
+
+
+
+
+## Model Evaluation
+
+### Objective
+Evaluate the performance of Logistic Regression and Random Forest models on the test dataset.  
+Additionally, assess feature importance for the Random Forest model.  
+
+### R Code
+```{r evaluation}
+# 13) Evaluate Logistic Regression
+log_preds <- bind_cols(predict(log_fit, test), select(test, completed_flag))
+log_metrics <- metrics(log_preds, truth = completed_flag, estimate = .pred_class)
+log_cm      <- conf_mat(log_preds, truth = completed_flag, estimate = .pred_class)
+
+log_metrics
+log_cm
+
+# 14) Evaluate Random Forest
+rf_preds <- bind_cols(predict(rf_fit, test), select(test, completed_flag))
+rf_metrics <- metrics(rf_preds, truth = completed_flag, estimate = .pred_class)
+rf_cm      <- conf_mat(rf_preds, truth = completed_flag, estimate = .pred_class)
+
+rf_metrics
+rf_cm
+
+# 15) Feature Importance for Random Forest
+rf_fit_parsnip <- extract_fit_parsnip(rf_fit)
+vip(rf_fit_parsnip)
+```
+
+### Functions Used
+- `predict()` – Generates predictions from the trained model  
+- `bind_cols()` – Combines predictions with the actual test labels  
+- `select()` – Extracts the outcome variable from the test dataset  
+- `metrics()` – Calculates accuracy and other classification metrics  
+- `conf_mat()` – Produces a confusion matrix for model predictions  
+- `extract_fit_parsnip()` – Extracts the underlying fitted model from the workflow  
+- `vip()` – Visualizes feature importance from the random forest  
+
+### Variables Created
+- `log_preds` → Logistic regression predictions on test data  
+- `log_metrics` → Evaluation metrics for logistic regression  
+- `log_cm` → Confusion matrix for logistic regression  
+- `rf_preds` → Random forest predictions on test data  
+- `rf_metrics` → Evaluation metrics for random forest  
+- `rf_cm` → Confusion matrix for random forest  
+- `rf_fit_parsnip` → Extracted fitted random forest model for feature importance  
+
+### Summary
+- Logistic Regression and Random Forest are evaluated on the test dataset.  
+- **Metrics** and **confusion matrices** provide insights into classification performance.  
+- Random Forest additionally provides **feature importance**, showing which predictors contribute most to the model.  
+
+
+
+
+
+
+
+
+
+
+# Conclusion  
+The hypothesis of this project was that patient- and treatment-related variables could be used to predict whether participants would complete a clinical trial. Two machine learning models were evaluated: **Logistic Regression** and **Random Forest**.  
+
+- **Logistic Regression** achieved 51.4% accuracy with a Cohen’s Kappa of -0.048, indicating no predictive power beyond chance.  
+- **Random Forest** improved accuracy to 64.9% with a Kappa of 0.236, showing modest predictive ability. It was more effective in identifying **non-completers** but still struggled with predicting **completers**.  
+- **Feature importance analysis** revealed that **Age** was the strongest predictor, followed by **sex** and **race**, aligning with clinical expectations that older participants may face more barriers to completion.  
+
+While not yet ready for clinical deployment, the findings support the hypothesis that baseline demographic variables carry predictive signal for trial completion.  
+
+## Key Insights & Real-World Impact  
+- **Model Trade-offs:** Logistic Regression offered interpretability but weak performance; Random Forest improved predictive ability at the cost of transparency.  
+- **Clinical Concern:** False negatives remain critical, as missed identification of at-risk patients reduces opportunities for timely support.  
+- **Healthcare Impact:** Predictive models could help trial coordinators **identify participants at risk of dropping out** and intervene with personalized support (e.g., reminders, transport aid, flexible scheduling). This can **reduce trial costs, improve retention, and accelerate drug development**.  
+
+## Next Steps  
+- **Enhance Features:** Incorporate clinical and behavioral variables (e.g., health conditions, engagement data).  
+- **Model Optimization:** Tune Random Forest and test more advanced ensemble methods.  
+- **Interpretability:** Apply SHAP or LIME to make predictions more transparent for clinical use.  
+
